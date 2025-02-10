@@ -1,0 +1,223 @@
+script MeasurementExample;
+//
+// Example Script how to make image and Point measurements with PI-Scanner inside SPT64
+// PicoQuant GmbH, July 2024
+// This is demo code. Use at your own risk. No warranties.
+//
+def
+  MyTCSPC: TCSPC pointer;  // TCSPC to measure
+  Scan: PIScanner pointer; // PI-Scanner Piezo
+  WS: WSTreeView pointer;  // Workspace to save my data
+  Num: Int;  // Number for the measurement Files
+  DevsOK: Bool; // all devices ok
+  File: TTTRFile; // File for measurements
+  CurDir: WSOHdl; // Current directory in Workspace to save the data
+  MeasRunning: Bool; // is the measurement running currently
+  Nx: Float; // Position for the next measurement, x and y
+  Ny: Float;
+  AnaInt: AnaIntensity; // Analyse to get the Intensity per pixel
+  BInt: BaseIntensity;  // Needed Base analysis for AnaIntensity
+  Integ: Integrator; // Integrator to calculate Intensity
+  Pic: Picture; // final result picture to do the magic
+  i: Int; // loop variable
+  PixRes: Float; // Pixel resolution read from file
+  XOff: Float;   // X Offset of the Picture, read from File
+  YOff: Float;   // Y Offset of the Picture, read from File
+  MaxC: Float; // Maximal counts in an Picture
+  XPos: Int;   // Positino of the maximal Counts in Picture as Pixel
+  YPos: Int;
+  xloop: Int; // counting variables for Picture
+  yloop: Int;
+application
+  guitype = GUI;
+
+methods
+
+// Wait for the Measurement to end.
+// little bit short on the Error check atm.
+// (See MyTCSPC.Measurement.GetFlags() for error handling)
+method WaitForMeasEnd(WithScanner: Bool);
+  repeat
+    MyTCSPC.Measurement.GetCTCStatus();
+    MeasRunning = MyTCSPC.Measurement.MeasRunning;
+    if WithScanner then
+      Scan.CheckScanRunning();
+      if not Scan.ScanRunning then
+        MeasRunning = FALSE;
+      end;
+    end;
+  until not MeasRunning;
+end;
+
+// Measure a point at X and Y in µm of the scanner, for Time_in_ms time
+method MeasurePoint(x: Float; y: Float; Time_in_ms: Int);
+  DebugOutput("-----------------------------");
+  DebugOutput("  Start Point Measurement");
+  // prepare File
+  File.CloseFile();
+  Num = 0;
+  GetNextFreeNumber(CurDir, "Point_", ".ptu", Num);
+  File.CreateInDir(CurDir, "Point_" + Num);
+
+  // prepare TCSPC
+  MyTCSPC.MeasSubMode = T3R_TIMED; // Point Mode
+  MyTCSPC.Measurement.AcqTime = Time_in_ms;
+  // Prepare Scanner
+  Scan.UpdatePos();
+  Scan.X0 = x;
+  Scan.X = x;
+  Scan.Y0 = y;
+  Scan.Y = y;
+  Scan.Z0 = Scan.Z;
+  Scan.GoToPos();
+  Scan.MeasurementMode = 1; // = Point mode
+
+  // init stuff
+  Scan.InitMeasurement(File);
+  MyTCSPC.InitMeasurement(File);
+
+  MyTCSPC.Measurement.StartMeas(File);
+
+  WaitForMeasEnd(FALSE);
+
+  MyTCSPC.Measurement.StopMeas(File, srTimeOver);
+  File.CloseFile();
+end;
+
+// Measure an image around X and Y  with Size in µm of the scanner
+// Pix: Number of Pixels for Size e.g. 128, 256
+// Frames: Number of Frames to scan (e.g. 10 Frames)
+// atm this uses full speed, fastest the scanner can do
+method MeasureImage(x: Float; y: Float; Size: Float; Pix: Int; Frames: Int);
+  DebugOutput("-----------------------------");
+  DebugOutput("  Start Image Measurement");
+  File.CloseFile();
+  Num = 0;
+  GetNextFreeNumber(CurDir, "Image_", ".ptu", Num);
+  File.CreateInDir(CurDir, "Image_" + Num);
+
+  // prepare TCSPC
+  MyTCSPC.MeasSubMode = T3R_IMAGING; // Image Mode
+  MyTCSPC.Measurement.AcqTime = ACQTMAX;
+  // Prepare Scanner
+  Scan.X0 = x - (Size / 2);
+  Scan.Y0 = y - (Size / 2);
+  Scan.Z0 = Scan.Z;
+  Scan.PixX = Pix;
+  Scan.PixY = Pix;
+  Scan.Bidirect = FALSE;
+  Scan.PixResolution = Size / Pix;
+  Scan.TimePerPixel = 0;
+  Scan.MeasurementMode = 3;
+  Scan.ScanMode = PI_SCANMODE_XY;
+  // init the measurement
+  Scan.InitMeasurement(File);
+  MyTCSPC.InitMeasurement(File);
+
+  MyTCSPC.Measurement.StartMeas(File);
+  Scan.StartScan();
+
+  WaitForMeasEnd(TRUE);
+
+  Scan.StopScan();
+  MyTCSPC.Measurement.StopMeas(File, srTimeOver);
+end;
+
+// Here the magic happens to find a new X and Y Position (Nx, Ny)
+// not implemented, only to show how to get the image
+method MagicHappens();
+  // Calculate the Image
+  AnaInt.BaseIntensity = BInt;
+  Integ.LinkedFile = File;
+  Calculate(Integ, AnaInt);
+  AnaInt.GetResult(Pic);
+  // we need some settings from the File to calc new postion from Pixel
+  File.GetAsFloat("ImgHdr_PixResol", -1, PixRes);
+  File.GetAsFloat("ImgHdr_X0", -1, XOff);
+  File.GetAsFloat("ImgHdr_Y0", -1, YOff);
+  //Intensity Data of the Image in Pic.Data[x,y]
+  // search for maximum, some magic
+  MaxC = 0;
+  for yloop = 0 to Pic.PixY -1 step 1
+    for xloop = 0 to Pic.PixX -1 step 1
+      if Pic.Data[xloop, yloop] > MaxC then
+        MaxC = Pic.Data[xloop, yloop];
+        XPos = xloop;
+        YPos = yloop;
+      end;
+    end;
+  end;
+  if MaxC > 0 then
+    DebugOutput("Maximum found at " + XPos + ", " + YPos + " with intensity " + Pic.Data[XPos, YPos] + " counts");
+    // and set new Postion, for example pixel 10, 4
+    Nx = XPos * PixRes + XOff;
+    Ny = YPos * PixRes + YOff;
+  else
+    DebugOutput("No Maximum found");
+  end;
+
+end;
+
+// the main Measurement loop
+method DoMeasurementProgram();
+  // initial position for Point measurement
+  Nx = 0;
+  Ny = 0;
+  // How often we toggle between Point and Image?
+  for i = 0 to 3 step 1
+    DebugOutput("############################");
+    DebugOutput("  Cycle numer " + i);
+    MeasurePoint(Nx, Ny, 5000); // position x, y, measurement time in ms = 5s
+    MeasureImage(Nx, Ny, 10, 128, 10); // measure 10 µm around this point with 128 px, 10 frames
+
+    MagicHappens(); // routine to get the image and get a new position (Change x, y ?)
+  end;
+  // the file from image stays open for analysis, close it here
+  File.CloseFile();
+  // all done
+  DebugOutput("  Measurement Done  ");
+  DebugOutput("############################");
+end;
+
+
+// Basic initilization
+exec
+  DevsOK = TRUE;
+  // get the devices we need
+  GetDefaultInstance(MyTCSPC);
+  GetDefaultInstance(Scan);
+  // check if TCSPC is there and connected
+  if MyTCSPC then
+    if MyTCSPC.DeviceIdx < 0 then
+      DevsOK = FALSE;
+    end;
+  else
+    DevsOK = FALSE;
+  end;
+  // check if Scanner is there and Connected
+  if Scan then
+    if Scan.Device == "" then
+      DevsOK = FALSE;
+    end;
+  else
+    DevsOK = FALSE;
+  end;
+  // all devs ok?
+  if not DevsOK then
+    GenerateRuntimeError(RTE_SCRIPTING_ERR_TEMPLATE, "Device not found", "", "", "");
+    Exit();
+  end;
+  // Get the Workspace Tree
+  GetDefaultInstance(WS);
+  // check workspace Tree and get current directory
+  // one could also create a new directory here and measure everything to there
+  if WS then
+    GetCurrentWorkingDir(WS.WSHandle, CurDir);
+  else
+    GenerateRuntimeError(RTE_SCRIPTING_ERR_TEMPLATE, "Worksapce not found", "", "", "");
+    Exit();
+  end;
+  // do the Measurement cycle
+  DoMeasurementProgram();
+  // all done
+end.
