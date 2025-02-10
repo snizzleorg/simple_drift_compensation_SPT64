@@ -1,4 +1,4 @@
-# **Analysis of the Measurement Script**
+# **Simple drift compensation for point measurements with SymPhoTime64**
 
 ## **Overview**
 This script, written in a **PicoQuant SPT64 scripting language**, is designed to perform **fluorescence lifetime imaging (FLIM) and time-correlated single-photon counting (TCSPC) measurements** using a **PI-Scanner** (Piezo Scanner) and a **TCSPC module**. It systematically scans points and images, analyzes intensity, and determines new scanning positions dynamically.
